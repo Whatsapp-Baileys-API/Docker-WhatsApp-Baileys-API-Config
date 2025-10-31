@@ -1,0 +1,17 @@
+# Ignore the node_modules folder (it will be installed inside the container)
+
+node_modules
+
+# Ignore the session files (we use a volume for this)
+
+sessions
+uploads
+
+# Ignore npm debug logs
+
+npm-debug.log
+
+# Ignore OS files
+
+.DS_Store
+Thumbs.db

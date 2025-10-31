@@ -1,0 +1,24 @@
+# Docker Compose version
+version: '3.8'
+
+services:
+  # This is the name of your service (you can call it anything)
+  app:
+    # Tell Docker to build the image from the Dockerfile in this folder
+    build: .
+    # Name the container
+    container_name: whatsapp-api-wrapper
+    # Always restart the container if it crashes
+    restart: always
+    # Connect your computer's port 3000 to the container's port 3000
+    ports:
+      - "3000:3000"
+    # --- This is the most important part ---
+    # It links folders from your computer to folders inside the container.
+    # This means your session files and uploads are saved permanently.
+    volumes:
+      # Saves session data
+      - ./sessions:/app/sessions
+      # Saves file uploads
+      - ./uploads:/app/uploads
+
