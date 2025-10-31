@@ -1,24 +1,65 @@
-# Docker Compose version
-version: '3.8'
+# The "version" tag is obsolete and has been removed.
 
 services:
-  # This is the name of your service (you can call it anything)
-  app:
-    # Tell Docker to build the image from the Dockerfile in this folder
-    build: .
-    # Name the container
-    container_name: whatsapp-api-wrapper
-    # Always restart the container if it crashes
+  # --- Postgres Database Service ---
+  db:
+    image: postgres:16-alpine
+    container_name: whatsapp-db
     restart: always
-    # Connect your computer's port 3000 to the container's port 3000
+    environment:
+      # --- IMPORTANT: Change these values! ---
+      POSTGRES_DB: whatsapp_api
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mysecretpassword
+      # ------------------------------------
     ports:
-      - "3000:3000"
-    # --- This is the most important part ---
-    # It links folders from your computer to folders inside the container.
-    # This means your session files and uploads are saved permanently.
+      # Expose port 5432 to your host machine for debugging (optional)
+      - "5432:5432"
     volumes:
-      # Saves session data
-      - ./sessions:/app/sessions
-      # Saves file uploads
+      # 1. Mounts our SQL script to be run on init
+      - ./db-init:/docker-entrypoint-initdb.d
+      
+      # 2. Mounts a volume to make the database data persistent
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # --- THIS IS THE FINAL CORRECTED LINE ---
+      # We now check for the specific user AND the specific database.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Your Application Service ---
+  app:
+    build: . # Build from the Dockerfile in the current directory
+    container_name: whatsapp-api
+    restart: always
+    ports:
+      - "3000:3000" # Expose your app's port
+    volumes:
+      # Mount volumes for persistent file handling by your app
       - ./uploads:/app/uploads
+      - ./downloads:/app/downloads
+      # We no longer mount ./sessions, as it's now in the DB
+    
+    # --- This tells your app to wait for the DB to be healthy ---
+    depends_on:
+      db:
+        condition: service_healthy
+        
+    # --- Pass the DB credentials to your Node.js app ---
+    environment:
+      NODE_ENV: production
+      # --- IMPORTANT: These MUST match the 'db' service! ---
+      DB_HOST: db # 'db' is the service name of our Postgres container
+      DB_NAME: whatsapp_api
+      DB_USER: myuser
+      DB_PASSWORD: mysecretpassword
+      DB_PORT: 5432
+      # ----------------------------------------------------
+
+# --- Define the persistent volume for Postgres ---
+volumes:
+  postgres-data:
+    # This volume will not be deleted when you run 'docker-compose down'
 

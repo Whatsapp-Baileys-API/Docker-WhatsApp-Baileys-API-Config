@@ -1,119 +1,116 @@
-import express from 'express';
-import Instance from '../core/instance.js'; 
+import { Router } from 'express';
+// --- THIS IS THE FIX for 'default' error ---
+// We use a "named import" { Instance } to match our "named export"
+import { Instance } from '../core/instance.js'; 
 import qrcode from 'qrcode';
 
-const router = express.Router();
+const router = Router();
 
-// --- Create a new instance --- (THIS ROUTE IS UPGRADED)
+// Get all instances (just for info)
+router.get('/', (req, res) => {
+    const instances = Array.from(global.instances.keys());
+    res.json({ instances });
+});
+
+// Create a new instance
 router.post('/create', async (req, res) => {
-    // --- 'webhookUrl' is new ---
-    const { key, webhookUrl } = req.body; 
+    const { key, webhookUrl } = req.body;
     
     if (!key) {
-        return res.status(400).json({ error: 'Instance key (key) is required' });
+        return res.status(400).json({ message: 'Instance key is required' });
     }
-
     if (global.instances.has(key)) {
-        return res.status(400).json({ error: 'Instance key already exists' });
+        return res.status(409).json({ message: 'Instance key already exists' });
     }
 
+    console.log(`Creating instance: ${key}`);
     try {
-        console.log(`Creating instance: ${key}`);
-        // --- Pass the webhookUrl to the constructor ---
-        const instance = new Instance(key, webhookUrl || null); 
-        await instance.init();
+        // --- THIS IS THE FIX for 'init' error ---
+        // The constructor now handles all initialization.
+        // We no longer call `instance.init()`
+        // The constructor is now synchronous, but we need to call an async init method.
+        const instance = new Instance(key, webhookUrl);
+        await instance.init(); // This is the crucial change
         
         global.instances.set(key, instance);
         
-        res.status(201).json({
+        res.status(201).json({ 
             message: 'Instance created successfully',
-            key: key,
+            key: instance.key,
             status: instance.status,
-            webhookUrl: instance.webhookUrl, // Send back the webhookUrl
+            webhookUrl: instance.webhookUrl
         });
     } catch (error) {
         console.error(`Error creating instance ${key}:`, error);
-        res.status(500).json({ error: 'Failed to create instance' });
+        res.status(500).json({ message: 'Error creating instance', error: error.message });
     }
 });
 
-// --- Get instance status --- (Unchanged)
+// Get instance status
 router.get('/status/:key', (req, res) => {
-    // ... (this route is the same) ...
     const { key } = req.params;
     const instance = global.instances.get(key);
 
     if (!instance) {
-        return res.status(404).json({ error: 'Instance not found' });
+        return res.status(404).json({ message: 'Instance not found' });
     }
 
-    res.status(200).json({
+    res.json({ 
         key: instance.key,
-        status: instance.status,
+        status: instance.status
     });
 });
 
-// --- Get instance QR code --- (Unchanged)
+// Get instance QR code
 router.get('/qr/:key', async (req, res) => {
-    // ... (this route is the same) ...
     const { key } = req.params;
     const instance = global.instances.get(key);
 
     if (!instance) {
-        return res.status(404).json({ error: 'Instance not found' });
+        return res.status(404).json({ message: 'Instance not found' });
     }
 
-    if (instance.status !== 'qr' || !instance.qr) {
-        return res.status(400).json({ 
-            error: 'QR code not available',
-            status: instance.status 
-        });
+    if (instance.status !== 'qr') {
+        return res.status(400).json({ message: `Instance is not awaiting QR. Status: ${instance.status}` });
     }
-
+    
     try {
-        const dataUrl = await qrcode.toDataURL(instance.qr);
+        // Generate QR as a Data URL (for browsers)
+        const qrImage = await qrcode.toDataURL(instance.qr);
+        // Send an HTML page that displays the image
         res.send(`
-            <html style="background-color: #2e2e2e; color: white; text-align: center; font-family: sans-serif;">
-                <head><title>Scan QR Code for ${key}</title></head>
-                <body style="display: grid; place-items: center; min-height: 100vh;">
-                    <div>
-                        <h1>Scan QR Code for "${key}"</h1>
-                        <p>Scan this with WhatsApp to link your device.</p>
-                        <img src="${dataUrl}" alt="QR Code" style="background-color: white; padding: 20px; border-radius: 16px;">
-                        <p>Status: ${instance.status}</p>
-                    </div>
+            <html lang="en">
+                <head><title>Scan QR Code</title></head>
+                <body style="display:flex; justify-content:center; align-items:center; flex-direction:column; font-family:sans-serif;">
+                    <h1>Scan QR Code for Instance: ${key}</h1>
+                    <img src="${qrImage}" alt="QR Code">
+                    <p>Status: ${instance.status}</p>
                 </body>
             </html>
         `);
-    } catch (err) {
-        console.error('Failed to generate QR code data URL', err);
-        res.status(500).json({ error: 'Failed to generate QR code' });
+    } catch (error) {
+        console.error(`[${key}] Error generating QR code image:`, error);
+        res.status(500).json({ message: 'Error generating QR code' });
     }
 });
 
-// --- Delete an instance --- (Unchanged)
+// Delete an instance
 router.delete('/delete/:key', async (req, res) => {
-    // ... (this route is the same) ...
     const { key } = req.params;
     const instance = global.instances.get(key);
 
     if (!instance) {
-        return res.status(404).json({ error: 'Instance not found' });
+        return res.status(404).json({ message: 'Instance not found' });
     }
 
     try {
-        await instance.sock?.logout();
+        await instance.cleanup(); // This disconnects and deletes session from DB
+        global.instances.delete(key);
+        res.json({ message: 'Instance deleted successfully' });
     } catch (error) {
-        console.error(`Error logging out instance ${key}:`, error);
+        console.error(`[${key}] Error deleting instance:`, error);
+        res.status(500).json({ message: 'Error deleting instance' });
     }
-
-    global.instances.delete(key);
-    console.log(`Instance ${key} deleted.`);
-
-    res.status(200).json({
-        message: 'Instance deleted successfully',
-        key: key,
-    });
 });
 
 export default router;
