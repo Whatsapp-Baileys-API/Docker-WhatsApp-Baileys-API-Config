@@ -54,7 +54,6 @@ export class Instance {
     constructor(key, webhookUrl = null) {
         this.key = key;
         this.webhookUrl = webhookUrl;
-        this.initialize();
     }
 
     // --- This function now queries Postgres ---
@@ -136,12 +135,16 @@ export class Instance {
             }
         }
 
-        // We load 'creds' manually once
-        const creds = await readAuthData('creds') || {};
+        // --- THIS IS THE FIX ---
+        // Create a single state object. Baileys will mutate this object directly,
+        // and our saveCreds function will have access to the mutated object.
+        const state = {
+            creds: await readAuthData('creds') || {},
+            keys: {},
+        };
 
         return {
             state: {
-                creds,
                 keys: {
                     get: async (type, ids) => {
                         const data = {};
@@ -151,7 +154,11 @@ export class Instance {
                                 if (type === 'app-state-sync-key' && value) {
                                     value = WAProto.Message.AppStateSyncKeyData.fromObject(value);
                                 }
-                                data[id] = value;
+                                // --- FIX PART 2: Populate the keys object in our shared state ---
+                                if (value) {
+                                    state.keys[key] = value;
+                                    data[id] = value;
+                                }
                             })
                         );
                         return data;
@@ -162,58 +169,86 @@ export class Instance {
                                 const value = data[category][id];
                                 const key = `${category}-${id}`;
                                 if (value) {
+                                    // --- FIX PART 3: Update the keys object in our shared state ---
+                                    state.keys[key] = value;
                                     await writeAuthData(key, value);
                                 } else {
+                                    delete state.keys[key];
                                     await removeAuthData(key);
                                 }
                             }
                         }
                     },
                 },
+                ...state // Spread the 'creds' and 'keys' from our shared state object
             },
             // This is the function Baileys will call to save creds
-            saveCreds: () => writeAuthData('creds', creds),
+            saveCreds: () => writeAuthData('creds', state.creds),
             // Add a helper to wipe all session data
             removeAllAuthData
         };
     }
 
     async initialize() {
-        console.log(`Creating instance: ${this.key}`);
-        
-        // Ensure directories exist (only for downloads now)
-        if (!fs.existsSync(downloadsDir)) {
-            fs.mkdirSync(downloadsDir, { recursive: true });
-        }
-        
-        // --- Use our custom Postgres auth state ---
-        const { state, saveCreds, removeAllAuthData } = await this.createPostgresAuthState();
-        
-        // We now pass this function to our cleanup logic
-        this.removeAllAuthData = removeAllAuthData;
-        
-        // --- THIS IS THE FIX ---
-        // Fetches the latest version instead of using a hardcoded one
-        const { version, isLatest } = await fetchLatestBaileysVersion();
-        
-        console.log(`[${this.key}] Using Baileys version: ${version.join('.')}, isLatest: ${isLatest}`);
+        // Wrap the entire initialization in a Promise to handle the async nature of connection.update
+        return new Promise(async (resolve, reject) => {
+            try {
+                console.log(`[${this.key}] Initializing instance...`);
+                
+                // Ensure directories exist (only for downloads now)
+                if (!fs.existsSync(downloadsDir)) {
+                    fs.mkdirSync(downloadsDir, { recursive: true });
+                }
+                
+                // --- Use our custom Postgres auth state ---
+                const { state, saveCreds, removeAllAuthData } = await this.createPostgresAuthState();
+                
+                // We now pass this function to our cleanup logic
+                this.removeAllAuthData = removeAllAuthData;
+                
+                const { version, isLatest } = await fetchLatestBaileysVersion();
+                
+                console.log(`[${this.key}] Using Baileys version: ${version.join('.')}, isLatest: ${isLatest}`);
 
-        this.socket = makeWASocket({
-            version,
-            printQRInTerminal: false,
-            // Use the Postgres auth state
-            auth: state,
-            logger: pino({ level: 'silent' }),
-            browser: ['MyVibeBot', 'Chrome', '1.0.0'],
-            // Pass our Postgres-backed getMessage function
-            getMessage: this.getMessage.bind(this)
+                this.socket = makeWASocket({
+                    version,
+                    printQRInTerminal: false,
+                    auth: state,
+                    logger: pino({ level: 'silent' }),
+                    browser: ['MyVibeBot', 'Chrome', '1.0.0'],
+                    getMessage: this.getMessage.bind(this)
+                });
+
+                // This listener will resolve the promise once we have a definitive state
+                this.socket.ev.on('connection.update', (update) => {
+                    const { connection, lastDisconnect, qr } = update;
+                    if (connection === 'open') {
+                        console.log(`[${this.key}] Initialization successful, connection open.`);
+                        resolve(this); // Resolve the promise on successful connection
+                    } else if (qr) {
+                        console.log(`[${this.key}] Initialization successful, QR code available.`);
+                        resolve(this); // Resolve the promise when QR is available
+                    } else if (connection === 'close') {
+                        // If it's a logout, we don't want to retry. Reject the promise.
+                        if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
+                            console.error(`[${this.key}] Initialization failed: Logged out.`);
+                            reject(new Error('Connection closed: Logged Out'));
+                        }
+                        // For other errors, Baileys will attempt to reconnect automatically.
+                        // We don't resolve or reject, just let it retry.
+                    }
+                });
+
+                // Set up all other event listeners
+                this.setupEventListeners();
+
+                // Save credentials on update
+                this.socket.ev.on('creds.update', saveCreds);
+            } catch (error) {
+                console.error(`[${this.key}] Critical error during initialization:`, error);
+                reject(error);
+            }
         });
-
-        // Set up all event listeners
-        this.setupEventListeners();
-
-        // Save credentials on update
-        this.socket.ev.on('creds.update', saveCreds);
     }
 
     async sendWebhook(event, data) {
@@ -232,7 +267,9 @@ export class Instance {
     
     // --- Main event handler setup ---
     setupEventListeners() {
-        // Handle connection updates
+        // --- IMPORTANT ---
+        // The primary connection.update logic is now inside the initialize() Promise.
+        // This listener handles ongoing status changes AFTER initialization.
         this.socket.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
             
@@ -254,9 +291,7 @@ export class Instance {
                     error: lastDisconnect.error?.message 
                 });
 
-                if (shouldReconnect) {
-                    this.initialize(); // Re-initialize
-                } else {
+                if (!shouldReconnect) {
                     console.log(`[${this.key}] Logged out. Deleting session.`);
                     this.cleanup();
                 }
@@ -391,4 +426,3 @@ export class Instance {
         }
     }
 }
-
