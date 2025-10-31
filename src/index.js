@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import instanceRoutes from './api/instanceRoutes.js';
-import messageRoutes from './api/messageRoutes.js'; 
+import messageRoutes from './api/messageRoutes.js';
 
 const app = express();
 const port = 3000;
@@ -18,17 +18,22 @@ app.use('/message', messageRoutes);
 
 // --- UPDATED WEBHOOK TESTER (NOW A KEYWORD BOT!) ---
 app.post('/webhook-tester', async (req, res) => {
-    console.log('--- ✅ WEBHOOK RECEIVED! ---');
+    console.log('--- WEBHOOK RECEIVED ---');
     
     // Send a "we got it" response right away
     res.status(200).json({ received: true });
 
     // --- START OF UPGRADED BOT LOGIC ---
     try {
-        const { key, event, data } = req.body;
+        const { key, event, data } = req.body || {};
+
+        if (!key || !event || !data) {
+            console.warn('Webhook payload missing required fields.');
+            return;
+        }
 
         // 1. Check if it's a new message event
-        if (event === 'message' && data.type === 'notify') {
+        if (event === 'message' && data.type === 'notify' && Array.isArray(data.messages)) {
             const instance = global.instances.get(key);
             if (!instance || instance.status !== 'connected') {
                 console.log(`[${key}] Instance not ready, skipping.`);
@@ -71,7 +76,7 @@ app.post('/webhook-tester', async (req, res) => {
                         await instance.sendText(senderJid, helpMsg);
                     
                     } else if (command === '!ping') {
-                        await instance.sendText(senderJid, 'Pong! 🏓');
+                        await instance.sendText(senderJid, 'Pong!');
                     
                     } else {
                         // The old echo logic
@@ -83,7 +88,7 @@ app.post('/webhook-tester', async (req, res) => {
                     // This will catch 'imageMessage', 'videoMessage', 'stickerMessage', etc.
                     const friendlyMediaType = mediaType.replace('Message', '');
                     console.log(`[${key}] Received media type (${friendlyMediaType}) from ${senderJid}`);
-                    await instance.sendText(senderJid, `Cool ${friendlyMediaType}! 👍`);
+                    await instance.sendText(senderJid, `Cool ${friendlyMediaType}!`);
 
                 } else {
                     console.log(`[${key}] Ignoring unknown message type from ${senderJid}`);
@@ -112,4 +117,3 @@ app.listen(port, () => {
     console.log('API is ready to use!');
     console.log('Webhook Tester is active at http://localhost:3000/webhook-tester');
 });
-

@@ -1,0 +1,241 @@
+{
+  "info": {
+    "name": "WhatsApp Baileys API",
+    "_postman_id": "a6f85e8d-b3a0-48f7-9cd3-collection-placeholder",
+    "description": "Collection covering the Docker WhatsApp Baileys API endpoints for managing instances and sending messages.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Instances",
+      "item": [
+        {
+          "name": "List Instances",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/instance",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "instance"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Instance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"{{instanceKey}}\",\n  \"webhookUrl\": \"{{webhookUrl}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/instance/create",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "instance",
+                "create"
+              ]
+            },
+            "description": "Creates a new WhatsApp instance and starts the Baileys socket."
+          }
+        },
+        {
+          "name": "Get Instance Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/instance/status/{{instanceKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "instance",
+                "status",
+                "{{instanceKey}}"
+              ]
+            },
+            "description": "Retrieves the current connection status for an instance."
+          }
+        },
+        {
+          "name": "Get Instance QR",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/instance/qr/{{instanceKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "instance",
+                "qr",
+                "{{instanceKey}}"
+              ]
+            },
+            "description": "Opens the HTML QR code page so the WhatsApp client can be paired."
+          }
+        },
+        {
+          "name": "Delete Instance",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/instance/delete/{{instanceKey}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "instance",
+                "delete",
+                "{{instanceKey}}"
+              ]
+            },
+            "description": "Disconnects the socket, removes auth state, and deletes the instance."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "Send Text Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"{{instanceKey}}\",\n  \"to\": \"{{recipientJid}}\",\n  \"message\": \"Hello from Postman\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/message/send/text",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "message",
+                "send",
+                "text"
+              ]
+            },
+            "description": "Sends a plain text message using an active instance."
+          }
+        },
+        {
+          "name": "Send Media Message",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "key",
+                  "value": "{{instanceKey}}",
+                  "type": "text"
+                },
+                {
+                  "key": "to",
+                  "value": "{{recipientJid}}",
+                  "type": "text"
+                },
+                {
+                  "key": "caption",
+                  "value": "Sample media caption",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/message/send/media",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "message",
+                "send",
+                "media"
+              ]
+            },
+            "description": "Uploads a media file (image/video/audio/document) and sends it to the target JID."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Utilities",
+      "item": [
+        {
+          "name": "Webhook Tester",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"{{instanceKey}}\",\n  \"event\": \"message\",\n  \"data\": {\n    \"type\": \"notify\",\n    \"messages\": [\n      {\n        \"key\": {\n          \"remoteJid\": \"{{recipientJid}}\",\n          \"fromMe\": false\n        },\n        \"message\": {\n          \"conversation\": \"!ping\"\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook-tester",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook-tester"
+              ]
+            },
+            "description": "Simulates the structure sent to an external webhook, useful for local testing."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "instanceKey",
+      "value": "demo-instance"
+    },
+    {
+      "key": "recipientJid",
+      "value": "000000000000@s.whatsapp.net"
+    },
+    {
+      "key": "webhookUrl",
+      "value": "http://localhost:3000/webhook-tester"
+    }
+  ]
+}

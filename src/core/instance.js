@@ -1,10 +1,11 @@
-import {
-    default as makeWASocket,
+import makeWASocket, {
     DisconnectReason,
     // We are NOT using useMultiFileAuthState
     fetchLatestBaileysVersion,
     downloadMediaMessage,
-    WAProto // WAProto is needed to revive messages from the DB
+    WAProto, // WAProto is needed to revive messages from the DB
+    initAuthCreds,
+    BufferJSON
 } from '@whiskeysockets/baileys';
 import { pino } from 'pino';
 import fs from 'fs';
@@ -20,26 +21,6 @@ const __dirname = dirname(__filename);
 
 // --- Downloads directory path (still needed for media files) ---
 const downloadsDir = join(__dirname, '..', '..', 'downloads');
-
-// --- Helper function to convert Buffer to a JSON-safe format ---
-// This is critical for storing auth state in Postgres JSONB
-const BufferJSON = {
-    replacer: (key, value) => {
-        if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
-            return {
-                type: 'Buffer',
-                data: Buffer.from(value?.data || value).toString('base64'),
-            };
-        }
-        return value;
-    },
-    reviver: (key, value) => {
-        if (typeof value === 'object' && value !== null && (value.buffer === true || value.type === 'Buffer')) {
-            return Buffer.from(value.data || value.value, 'base64');
-        }
-        return value;
-    },
-};
 
 // --- THIS IS A NAMED EXPORT ---
 export class Instance {
@@ -82,16 +63,21 @@ export class Instance {
         const authTable = 'baileys_auth_store';
         // Prefix keys with the instance key to support multi-device
         const instanceKeyPrefix = `auth-${this.key}-`;
+        const cachedKeys = new Map();
 
         const writeAuthData = async (key, data) => {
             try {
                 // Convert buffers to JSON-safe format before storing
                 const jsonData = JSON.stringify(data, BufferJSON.replacer);
+                if (jsonData === undefined) {
+                    console.warn(`[${this.key}] No auth payload for key ${key}, skipping write.`);
+                    return;
+                }
                 const query = `
                     INSERT INTO ${authTable} (key_id, key_data) 
-                    VALUES ($1, $2) 
+                    VALUES ($1, $2::jsonb) 
                     ON CONFLICT (key_id) 
-                    DO UPDATE SET key_data = $2;
+                    DO UPDATE SET key_data = EXCLUDED.key_data;
                 `;
                 await dbPool.query(query, [instanceKeyPrefix + key, jsonData]);
             } catch (error) {
@@ -106,8 +92,7 @@ export class Instance {
                 
                 if (rows.length > 0) {
                     // Revive buffers from JSON-safe format
-                    const data = JSON.parse(JSON.stringify(rows[0].key_data), BufferJSON.reviver);
-                    return data;
+                    return JSON.parse(JSON.stringify(rows[0].key_data), BufferJSON.reviver);
                 }
                 return null;
             } catch (error) {
@@ -126,66 +111,73 @@ export class Instance {
         };
         
         const removeAllAuthData = async () => {
-             try {
+            try {
                 const query = `DELETE FROM ${authTable} WHERE key_id LIKE $1;`;
                 await dbPool.query(query, [`${instanceKeyPrefix}%`]);
+                cachedKeys.clear();
                 console.log(`[${this.key}] All auth data removed from DB.`);
             } catch (error) {
                 console.error(`[${this.key}] Error removing all auth data:`, error);
             }
-        }
+        };
 
-        // --- THIS IS THE FIX ---
-        // Create a single state object. Baileys will mutate this object directly,
-        // and our saveCreds function will have access to the mutated object.
-        const state = {
-            creds: await readAuthData('creds') || {},
-            keys: {},
+        const creds = (await readAuthData('creds')) || initAuthCreds();
+
+        const keys = {
+            get: async (type, ids) => {
+                const data = {};
+                await Promise.all(
+                    ids.map(async (id) => {
+                        const keyId = `${type}-${id}`;
+                        if (cachedKeys.has(keyId)) {
+                            data[id] = cachedKeys.get(keyId);
+                            return;
+                        }
+
+                        const value = await readAuthData(keyId);
+                        if (!value) {
+                            return;
+                        }
+
+                        const hydrated =
+                            type === 'app-state-sync-key'
+                                ? WAProto.Message.AppStateSyncKeyData.fromObject(value)
+                                : value;
+
+                        cachedKeys.set(keyId, hydrated);
+                        data[id] = hydrated;
+                    })
+                );
+                return data;
+            },
+            set: async (data) => {
+                const promises = [];
+                for (const category of Object.keys(data)) {
+                    for (const id of Object.keys(data[category])) {
+                        const value = data[category][id];
+                        const keyId = `${category}-${id}`;
+                        if (value) {
+                            cachedKeys.set(keyId, value);
+                            promises.push(writeAuthData(keyId, value));
+                        } else {
+                            cachedKeys.delete(keyId);
+                            promises.push(removeAuthData(keyId));
+                        }
+                    }
+                }
+                await Promise.all(promises);
+            },
         };
 
         return {
             state: {
-                keys: {
-                    get: async (type, ids) => {
-                        const data = {};
-                        await Promise.all(
-                            ids.map(async (id) => {
-                                let value = await readAuthData(`${type}-${id}`);
-                                if (type === 'app-state-sync-key' && value) {
-                                    value = WAProto.Message.AppStateSyncKeyData.fromObject(value);
-                                }
-                                // --- FIX PART 2: Populate the keys object in our shared state ---
-                                if (value) {
-                                    state.keys[key] = value;
-                                    data[id] = value;
-                                }
-                            })
-                        );
-                        return data;
-                    },
-                    set: async (data) => {
-                        for (const category in data) {
-                            for (const id in data[category]) {
-                                const value = data[category][id];
-                                const key = `${category}-${id}`;
-                                if (value) {
-                                    // --- FIX PART 3: Update the keys object in our shared state ---
-                                    state.keys[key] = value;
-                                    await writeAuthData(key, value);
-                                } else {
-                                    delete state.keys[key];
-                                    await removeAuthData(key);
-                                }
-                            }
-                        }
-                    },
-                },
-                ...state // Spread the 'creds' and 'keys' from our shared state object
+                creds,
+                keys,
             },
             // This is the function Baileys will call to save creds
-            saveCreds: () => writeAuthData('creds', state.creds),
+            saveCreds: () => writeAuthData('creds', creds),
             // Add a helper to wipe all session data
-            removeAllAuthData
+            removeAllAuthData,
         };
     }
 
@@ -282,18 +274,19 @@ export class Instance {
             }
 
             if (connection === 'close') {
-                const shouldReconnect = (lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut);
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 this.status = 'disconnected';
-                console.log(`[${this.key}] Connection closed: ${lastDisconnect.error}, reconnecting: ${shouldReconnect}`);
+                console.log(`[${this.key}] Connection closed: ${lastDisconnect?.error}, reconnecting: ${shouldReconnect}`);
                 
                 this.sendWebhook('connection', { 
                     connection: 'disconnected', 
-                    error: lastDisconnect.error?.message 
+                    error: lastDisconnect?.error?.message 
                 });
 
                 if (!shouldReconnect) {
                     console.log(`[${this.key}] Logged out. Deleting session.`);
-                    this.cleanup();
+                    void this.cleanup();
                 }
             } else if (connection === 'open') {
                 this.status = 'connected';
@@ -315,9 +308,9 @@ export class Instance {
                         const messageData = JSON.stringify(message, BufferJSON.replacer);
                         const query = `
                             INSERT INTO baileys_message_store (message_id, message_data) 
-                            VALUES ($1, $2) 
+                            VALUES ($1, $2::jsonb) 
                             ON CONFLICT (message_id) 
-                            DO UPDATE SET message_data = $2;
+                            DO UPDATE SET message_data = EXCLUDED.message_data;
                         `;
                         await dbPool.query(query, [message.key.id, messageData]);
                     } catch (error) {
@@ -354,19 +347,20 @@ export class Instance {
     }
 
     // Send a media file
-    async sendMedia(to, filePath, caption = '', fileType) {
+    async sendMedia(to, filePath, caption = '', fileType = 'document', originalFileName = undefined) {
         if (this.status !== 'connected') return { error: 'Instance not connected' };
         
         let mediaConfig = {};
+        const fileName = originalFileName || path.basename(filePath);
         
         if (fileType === 'image') {
-            mediaConfig = { image: { url: filePath }, caption: caption };
+            mediaConfig = { image: { url: filePath }, caption };
         } else if (fileType === 'video') {
-            mediaConfig = { video: { url:filePath }, caption: caption };
+            mediaConfig = { video: { url: filePath }, caption };
         } else if (fileType === 'audio') {
-            mediaConfig = { audio: { url: filePath }, mimetype: 'audio/mp4' }; 
+            mediaConfig = { audio: { url: filePath }, mimetype: 'audio/mp4' };
         } else {
-            mediaConfig = { document: { url: filePath }, caption: caption, fileName: path.basename(filePath) };
+            mediaConfig = { document: { url: filePath }, caption, fileName };
         }
 
         try {
@@ -422,7 +416,15 @@ export class Instance {
         
         // --- Clear the auth data from Postgres ---
         if (this.removeAllAuthData) {
-            await this.removeAllAuthData();
+            try {
+                await this.removeAllAuthData();
+            } catch (error) {
+                console.error(`[${this.key}] Failed to remove auth data during cleanup:`, error);
+            }
+        }
+
+        if (globalThis?.instances instanceof Map) {
+            globalThis.instances.delete(this.key);
         }
     }
 }

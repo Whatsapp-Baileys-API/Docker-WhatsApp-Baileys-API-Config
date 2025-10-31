@@ -1,10 +1,15 @@
 import express from 'express';
 import multer from 'multer';
 import fs from 'fs'; // We need 'fs' to delete temp files
+import path from 'path';
 
 const router = express.Router();
-// Set up multer to save uploaded files to a temp 'uploads/' folder
-const upload = multer({ dest: 'uploads/' });
+// Set up multer's temporary upload folder and ensure it exists
+const uploadDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+const upload = multer({ dest: uploadDir });
 
 // --- Button 1: Send a Text Message ---
 router.post('/send/text', async (req, res) => {
@@ -52,13 +57,17 @@ router.post('/send/media', upload.single('file'), async (req, res) => {
     const instance = global.instances.get(key);
     if (!instance) {
         // Clean up the uploaded file if instance not found
-        fs.unlinkSync(file.path);
+        if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+        }
         return res.status(404).json({ error: 'Instance not found' });
     }
 
     if (instance.status !== 'connected') {
         // Clean up the uploaded file
-        fs.unlinkSync(file.path);
+        if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+        }
         return res.status(400).json({ error: 'Instance is not connected' });
     }
 
@@ -77,13 +86,15 @@ router.post('/send/media', upload.single('file'), async (req, res) => {
         const sentMsg = await instance.sendMedia(
             to,
             file.path, // Pass the path to the temp file
-            type,
             caption || '',
+            type,
             file.originalname // Pass the original filename
         );
 
         // --- CRITICAL: Clean up the temp file after sending ---
-        fs.unlinkSync(file.path);
+        if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path);
+        }
 
         res.status(200).json({
             success: true,
